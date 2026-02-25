@@ -7,9 +7,12 @@ from pathlib import Path
 N_SAMPLES = 500
 FS_HZ = 1000
 F_MAX_HZ = 19
+RANDOM_SEED = 42
 
 
-def generate_signal(n=N_SAMPLES, mean=0.0, std=10.0):
+def generate_signal(n=N_SAMPLES, mean=0.0, std=10.0, seed=RANDOM_SEED):
+    if seed is not None:
+        np.random.seed(seed)
     return np.random.normal(mean, std, n)
 
 
@@ -45,15 +48,15 @@ if __name__ == "__main__":
     plot_signal(
         filtered_signal,
         time,
-        title="Відфільтрований сигнал",
-        xlabel="Час (с)",
-        ylabel="Амплітуда",
+        title=f"Сигнал с максимальной частотой F_max = {F_MAX_HZ} Гц",
+        xlabel="Час (секунды)",
+        ylabel="Амплитуда сигнала",
     )
 
     plot_signal(
         spectrum_shifted,
         freqs_shifted,
-        title="Спектр сигналу",
+        title=f"Спектр сигнала с максимальной частотой F_max = {F_MAX_HZ} Гц",
         xlabel="Частота (Гц)",
-        ylabel="Амплітуда",
+        ylabel="Амплитуда спектра",
     )
