@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
+import glob
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pywt
 import soundfile as sf
-from scipy.signal import convolve
+from scipy.signal import convolve, resample
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from skimage.restoration import (
     cycle_spin,
     denoise_bilateral,
@@ -34,6 +36,7 @@ PLOT_BILATERAL = SOUNDS_DIR / "Plot_Bilateral.png"
 PLOT_WAVELET = SOUNDS_DIR / "Plot_Wavelet.png"
 PLOT_SHIFTED_WAVELET = SOUNDS_DIR / "Plot_Shifted_Wavelet.png"
 PLOT_GAUSSIAN = SOUNDS_DIR / "Plot_Gaussian_Filter.png"
+PLOT_METRICS = SOUNDS_DIR / "Plot_Metrics_Table.png"
 
 
 def load_mono_signal(path: Path):
@@ -233,5 +236,88 @@ def wavelet_shifted_filter():
     save_gaussian_plot(time_ms, data, filtered_signal, PLOT_GAUSSIAN)
 
 
+def calculate_metrics(reference_signal, processed_signal):
+    mse = mean_squared_error(reference_signal, processed_signal)
+    mae = mean_absolute_error(reference_signal, processed_signal)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(reference_signal, processed_signal)
+    variance = np.var(reference_signal - processed_signal)
+    return mse, mae, rmse, r2, variance
+
+
+def to_scientific_pretty(x, precision=2):
+    superscripts = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+    mantissa, exponent = f"{x:.{precision}e}".split("e")
+    mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa} · 10{str(int(exponent)).translate(superscripts)}"
+
+
+def save_metrics_table(results, row_labels, headers, output_path: Path):
+    n_rows = len(row_labels)
+    n_cols = len(headers)
+    fig, ax = plt.subplots(figsize=(n_cols * 2.8, max(1, n_rows) * 0.4 + 1.0))
+    ax.axis("off")
+    table = ax.table(
+        cellText=results,
+        rowLabels=row_labels,
+        colLabels=headers,
+        cellLoc="center",
+        loc="center",
+        bbox=[0.08, 0, 1, 1],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=600, bbox_inches="tight")
+    plt.close(fig)
+
+
+def prettify_filter_name(sound_path):
+    type_filter = sound_path.replace("./Sounds/Filtered_", "")
+    type_filter = type_filter.replace(".wav", "")
+    type_filter = type_filter.replace("_", " ")
+    if type_filter == "4000[Hz] 2[byte]":
+        return "Linear Filter 4 kHz"
+    return type_filter
+
+
 if __name__ == "__main__":
-    wavelet_shifted_filter()
+    # sound_filter()
+    # wavelet_shifted_filter()
+    results = []
+    row = []
+    headers = ["MSE", "MAE", "RMSE", "R2", "D"]
+
+    data_original, fs_original = load_mono_signal(NAME_ORIGINAL_WAV)
+    wav_files = sorted(glob.glob("./Sounds/*.wav"))
+    original_sound = f"./{NAME_ORIGINAL_WAV.as_posix()}"
+    resampled_sound = f"./{NAME_RESAMPLED_WAV.as_posix()}"
+
+    for sounds in wav_files:
+        sounds = sounds.replace("\\", "/")
+
+        if sounds == original_sound:
+            continue
+
+        if sounds == resampled_sound:
+            row.append("Resample 4 kHz")
+            data, fs = load_mono_signal(Path(sounds))
+            data = resample(data, len(data_original)).astype(np.float32)
+        else:
+            row.append(prettify_filter_name(sounds))
+            data, fs = load_mono_signal(Path(sounds))
+            if len(data) != len(data_original):
+                data = resample(data, len(data_original)).astype(np.float32)
+
+        mse, mae, rmse, r2, variance = calculate_metrics(data_original, data)
+        results.append(
+            [
+                to_scientific_pretty(mse),
+                to_scientific_pretty(mae),
+                to_scientific_pretty(rmse),
+                round(r2, 2),
+                to_scientific_pretty(variance),
+            ]
+        )
+
+    save_metrics_table(results, row, headers, PLOT_METRICS)
