@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-import glob
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pywt
 import soundfile as sf
-from scipy.signal import convolve, resample
+from scipy.signal import convolve
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from skimage.restoration import (
     cycle_spin,
@@ -37,6 +36,19 @@ PLOT_WAVELET = SOUNDS_DIR / "Plot_Wavelet.png"
 PLOT_SHIFTED_WAVELET = SOUNDS_DIR / "Plot_Shifted_Wavelet.png"
 PLOT_GAUSSIAN = SOUNDS_DIR / "Plot_Gaussian_Filter.png"
 PLOT_METRICS = SOUNDS_DIR / "Plot_Metrics_Table.png"
+PLOT_FILTRATION_MSE = SOUNDS_DIR / "Plot_Filtration_Efficiency_MSE.png"
+PLOT_FILTRATION_MAE = SOUNDS_DIR / "Plot_Filtration_Efficiency_MAE.png"
+PLOT_FILTRATION_RMSE = SOUNDS_DIR / "Plot_Filtration_Efficiency_RMSE.png"
+PLOT_FILTRATION_R2 = SOUNDS_DIR / "Plot_Filtration_Efficiency_R2.png"
+PLOT_FILTRATION_D = SOUNDS_DIR / "Plot_Filtration_Efficiency_D.png"
+
+FILTRATION_METRIC_PLOTS = {
+    "MSE": PLOT_FILTRATION_MSE,
+    "MAE": PLOT_FILTRATION_MAE,
+    "RMSE": PLOT_FILTRATION_RMSE,
+    "R2": PLOT_FILTRATION_R2,
+    "D": PLOT_FILTRATION_D,
+}
 
 
 def load_mono_signal(path: Path):
@@ -245,6 +257,171 @@ def calculate_metrics(reference_signal, processed_signal):
     return mse, mae, rmse, r2, variance
 
 
+def build_filtration_metric_storage():
+    return {
+        metric_name: {"mean": [], "list": []}
+        for metric_name in FILTRATION_METRIC_PLOTS
+    }
+
+
+def build_scatter_points(snr_values, metric_lists):
+    snr_scatter = []
+    metric_scatter = []
+    for snr, values in zip(snr_values, metric_lists):
+        snr_scatter.extend([snr] * len(values))
+        metric_scatter.extend(values)
+    return snr_scatter, metric_scatter
+
+
+def set_metric_scale(axis, values):
+    values = np.asarray(values, dtype=np.float64)
+    non_zero = np.abs(values[np.nonzero(values)])
+
+    if non_zero.size == 0:
+        return "linear"
+
+    if np.any(values <= 0):
+        axis.set_yscale("symlog", linthresh=max(non_zero.min(), 1e-6))
+        return "symlog"
+
+    axis.set_yscale("log")
+    return "log"
+
+
+def save_metric_vs_snr_plot(
+    metric_name,
+    snr_values,
+    metric_mean_wavelet,
+    metric_list_wavelet,
+    metric_mean_gaussian,
+    metric_list_gaussian,
+    output_path: Path,
+):
+    snr_scatter_wt, metric_scatter_wt = build_scatter_points(
+        snr_values, metric_list_wavelet
+    )
+    snr_scatter_g, metric_scatter_g = build_scatter_points(
+        snr_values, metric_list_gaussian
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    for axis in axes:
+        axis.scatter(
+            snr_scatter_wt,
+            metric_scatter_wt,
+            color="red",
+            alpha=0.05,
+            label="Wavelet MSE values" if metric_name == "MSE" else "Wavelet values",
+        )
+        axis.plot(snr_values, metric_mean_wavelet, linewidth=2, label="Mean WT")
+        axis.scatter(
+            snr_scatter_g,
+            metric_scatter_g,
+            color="green",
+            alpha=0.05,
+            label="Gaussian MSE values" if metric_name == "MSE" else "Gaussian values",
+        )
+        axis.plot(snr_values, metric_mean_gaussian, linewidth=2, label="Mean GF")
+        axis.set_xlabel("SNR (dB)")
+        axis.set_ylabel(metric_name)
+        axis.grid(True)
+        axis.legend()
+
+    axes[0].set_xticks(np.arange(-10, 21, 2))
+    axes[0].set_title(f"{metric_name}: Linear Scale")
+
+    axes[1].set_xticks(np.arange(-10, 21, 1))
+    scale_name = set_metric_scale(
+        axes[1],
+        metric_scatter_wt
+        + metric_scatter_g
+        + metric_mean_wavelet
+        + metric_mean_gaussian,
+    )
+    axes[1].set_title(
+        f"{metric_name}: Log Scale" if scale_name == "log" else f"{metric_name}: Symmetric Log Scale"
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=600)
+    plt.close(fig)
+
+
+def filtration_efficiency():
+    if not NAME_ORIGINAL_WAV.exists():
+        raise FileNotFoundError(
+            f"Missing source file: {NAME_ORIGINAL_WAV}. Run practical work 2 recording first."
+        )
+
+    SOUNDS_DIR.mkdir(exist_ok=True)
+
+    data, _ = load_mono_signal(NAME_ORIGINAL_WAV)
+    signal_power = float(np.mean(data ** 2))
+    max_shifts = 5
+    snr_values = []
+    wavelet_metrics = build_filtration_metric_storage()
+    gaussian_metrics = build_filtration_metric_storage()
+    rng = np.random.default_rng(526)
+    kernel = gaussian_kernel(size=11, sigma=2).astype(np.float32)
+
+    for snr_db in np.arange(-10, 20.5, 0.5):
+        wavelet_trial_metrics = {metric_name: [] for metric_name in FILTRATION_METRIC_PLOTS}
+        gaussian_trial_metrics = {metric_name: [] for metric_name in FILTRATION_METRIC_PLOTS}
+        noise_power = signal_power / (10 ** (snr_db / 10))
+
+        for _ in range(10):
+            noise = rng.normal(0, np.sqrt(noise_power), size=data.shape).astype(np.float32)
+            noisy_signal = (data + noise).astype(np.float32)
+
+            sig_filtered_wavelet = cycle_spin(
+                noisy_signal,
+                func=wavelet_denoiser,
+                max_shifts=max_shifts,
+                shift_steps=5,
+                workers=1,
+            ).astype(np.float32)
+            sig_filtered_gaussian = convolve(noisy_signal, kernel, mode="same").astype(
+                np.float32
+            )
+
+            wavelet_values = calculate_metrics(data, sig_filtered_wavelet)
+            gaussian_values = calculate_metrics(data, sig_filtered_gaussian)
+
+            for metric_name, metric_value in zip(FILTRATION_METRIC_PLOTS, wavelet_values):
+                wavelet_trial_metrics[metric_name].append(float(metric_value))
+
+            for metric_name, metric_value in zip(FILTRATION_METRIC_PLOTS, gaussian_values):
+                gaussian_trial_metrics[metric_name].append(float(metric_value))
+
+        for metric_name in FILTRATION_METRIC_PLOTS:
+            wavelet_metrics[metric_name]["mean"].append(
+                float(np.mean(wavelet_trial_metrics[metric_name]))
+            )
+            wavelet_metrics[metric_name]["list"].append(
+                list(wavelet_trial_metrics[metric_name])
+            )
+            gaussian_metrics[metric_name]["mean"].append(
+                float(np.mean(gaussian_trial_metrics[metric_name]))
+            )
+            gaussian_metrics[metric_name]["list"].append(
+                list(gaussian_trial_metrics[metric_name])
+            )
+
+        snr_values.append(float(snr_db))
+
+    for metric_name, output_path in FILTRATION_METRIC_PLOTS.items():
+        save_metric_vs_snr_plot(
+            metric_name=metric_name,
+            snr_values=snr_values,
+            metric_mean_wavelet=wavelet_metrics[metric_name]["mean"],
+            metric_list_wavelet=wavelet_metrics[metric_name]["list"],
+            metric_mean_gaussian=gaussian_metrics[metric_name]["mean"],
+            metric_list_gaussian=gaussian_metrics[metric_name]["list"],
+            output_path=output_path,
+        )
+
+
 def to_scientific_pretty(x, precision=2):
     superscripts = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
     mantissa, exponent = f"{x:.{precision}e}".split("e")
@@ -282,42 +459,4 @@ def prettify_filter_name(sound_path):
 
 
 if __name__ == "__main__":
-    # sound_filter()
-    # wavelet_shifted_filter()
-    results = []
-    row = []
-    headers = ["MSE", "MAE", "RMSE", "R2", "D"]
-
-    data_original, fs_original = load_mono_signal(NAME_ORIGINAL_WAV)
-    wav_files = sorted(glob.glob("./Sounds/*.wav"))
-    original_sound = f"./{NAME_ORIGINAL_WAV.as_posix()}"
-    resampled_sound = f"./{NAME_RESAMPLED_WAV.as_posix()}"
-
-    for sounds in wav_files:
-        sounds = sounds.replace("\\", "/")
-
-        if sounds == original_sound:
-            continue
-
-        if sounds == resampled_sound:
-            row.append("Resample 4 kHz")
-            data, fs = load_mono_signal(Path(sounds))
-            data = resample(data, len(data_original)).astype(np.float32)
-        else:
-            row.append(prettify_filter_name(sounds))
-            data, fs = load_mono_signal(Path(sounds))
-            if len(data) != len(data_original):
-                data = resample(data, len(data_original)).astype(np.float32)
-
-        mse, mae, rmse, r2, variance = calculate_metrics(data_original, data)
-        results.append(
-            [
-                to_scientific_pretty(mse),
-                to_scientific_pretty(mae),
-                to_scientific_pretty(rmse),
-                round(r2, 2),
-                to_scientific_pretty(variance),
-            ]
-        )
-
-    save_metrics_table(results, row, headers, PLOT_METRICS)
+    filtration_efficiency()
