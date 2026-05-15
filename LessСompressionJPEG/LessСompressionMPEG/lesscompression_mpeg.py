@@ -13,12 +13,20 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = SCRIPT_DIR / "Results"
 DEFAULT_VIDEO_NAME = "sample4.avi"
+VIDEO_NAME_CANDIDATES = ("sample4.avi", "sample4 (1).avi")
+HISTOGRAM_FILENAME = "Гістограма кількості біт на піксель для різних варіантів кодування.png"
 FALLBACK_VIDEO_PATHS = [
     SCRIPT_DIR / DEFAULT_VIDEO_NAME,
+    SCRIPT_DIR / "sample4 (1).avi",
     SCRIPT_DIR.parent / DEFAULT_VIDEO_NAME,
+    SCRIPT_DIR.parent / "sample4 (1).avi",
     Path.cwd() / DEFAULT_VIDEO_NAME,
+    Path.cwd() / "sample4 (1).avi",
     Path(r"D:\Zagruzki") / DEFAULT_VIDEO_NAME,
+    Path(r"D:\Zagruzki") / "sample4 (1).avi",
 ]
+
+FALLBACK_VIDEO_DIRS = tuple(dict.fromkeys(path.parent for path in FALLBACK_VIDEO_PATHS))
 
 
 def segmentImage(anchor, blockSize=16):
@@ -136,6 +144,25 @@ def resolve_video_path(filename):
     if candidate.exists():
         return candidate
 
+    requested_name = candidate.name
+    for directory in FALLBACK_VIDEO_DIRS:
+        requested_path = directory / requested_name
+        if requested_path.exists():
+            return requested_path
+
+    for video_name in VIDEO_NAME_CANDIDATES:
+        if candidate.name == video_name:
+            continue
+        alternative = candidate.with_name(video_name)
+        if alternative.exists():
+            return alternative
+
+    for directory in FALLBACK_VIDEO_DIRS:
+        for video_name in VIDEO_NAME_CANDIDATES:
+            alternative = directory / video_name
+            if alternative.exists():
+                return alternative
+
     for path in FALLBACK_VIDEO_PATHS:
         if path.exists():
             return path
@@ -225,7 +252,7 @@ def save_chart(bitsAnchor, bitsDiff, bitsPredicted, outfile):
     )
     plt.legend()
     plt.tight_layout()
-    plt.savefig(Path(outfile) / "Bits per pixel histogram.png", dpi=600)
+    plt.savefig(Path(outfile) / HISTOGRAM_FILENAME, dpi=600)
     plt.close()
 
 
